@@ -183,9 +183,17 @@ def generate_y(
         mean = intercept + slope * x
     elif dgp == "Quadratic (misspecified for OLS)":
         mean = intercept + slope * x + quad_strength * (x / scale) ** 2
-    else:  # Piecewise / drift
+    elif dgp == "Exponential (misspecified for OLS)":
+        curvature = quad_strength / 8.0
+        if curvature <= 1e-9:
+            mean = intercept + slope * x
+        else:
+            mean = intercept + slope * scale * np.expm1(curvature * x / scale) / curvature
+    elif dgp == "Piecewise / drift":
         mean = intercept + slope * x
         mean = np.where(x < 0, mean + 0.75 * quad_strength * (x / scale), mean - 0.75 * quad_strength * (x / scale))
+    else:
+        raise ValueError(f"Unknown data-generating process: {dgp}")
 
     if heteroskedastic:
         sigma = noise_sd * (0.55 + 0.90 * np.abs(x) / max(np.max(np.abs(x)), 1.0))
@@ -473,7 +481,7 @@ with st.sidebar:
 
     dgp = st.selectbox(
         "Underlying data-generating process",
-        ["Linear", "Quadratic (misspecified for OLS)", "Piecewise / drift"],
+        ["Linear", "Quadratic (misspecified for OLS)", "Exponential (misspecified for OLS)", "Piecewise / drift"],
         index=0,
         help="OLS still fits a straight line, even when the true relationship is not linear.",
     )
@@ -486,7 +494,7 @@ with st.sidebar:
         8.0,
         2.5,
         0.1,
-        help="Only matters for the quadratic and piecewise data-generating processes.",
+        help="Controls curvature in the quadratic and exponential worlds and the slope change in the piecewise world.",
     )
     heteroskedastic = st.toggle(
         "Heteroskedastic errors",
@@ -957,7 +965,18 @@ with tab4:
         elif dgp == "Quadratic (misspecified for OLS)":
             effective_quadratic = quad_strength / relationship_scale**2
             true_formula = rf"E[y \mid x] = {true_intercept:.2f} {true_slope:+.2f}x {effective_quadratic:+.3f}x^2"
-        else:
+        elif dgp == "Exponential (misspecified for OLS)":
+            curvature = quad_strength / 8.0
+            if curvature <= 1e-9:
+                true_formula = rf"E[y \mid x] = {true_intercept:.2f} {true_slope:+.2f}x"
+            else:
+                exponential_rate = curvature / relationship_scale
+                exponential_multiplier = true_slope / exponential_rate
+                true_formula = (
+                    rf"E[y \mid x] = {true_intercept:.2f} "
+                    rf"{exponential_multiplier:+.2f}\left(e^{{{exponential_rate:.3f}x}} - 1\right)"
+                )
+        else:  # Piecewise / drift
             left_slope = true_slope + 0.75 * quad_strength / relationship_scale
             right_slope = true_slope - 0.75 * quad_strength / relationship_scale
             true_formula = (
