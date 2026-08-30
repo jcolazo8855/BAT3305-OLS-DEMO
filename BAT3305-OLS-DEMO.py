@@ -173,9 +173,11 @@ def generate_y(
     rng: np.random.Generator,
     quad_strength: float,
     heteroskedastic: bool,
+    relationship_scale: float | None = None,
 ) -> np.ndarray:
     x = np.asarray(x, dtype=float)
-    scale = np.std(x) if np.std(x) > 1e-9 else 1.0
+    observed_scale = float(np.std(x))
+    scale = float(relationship_scale) if relationship_scale is not None else (observed_scale if observed_scale > 1e-9 else 1.0)
 
     if dgp == "Linear":
         mean = intercept + slope * x
@@ -291,6 +293,12 @@ def ensure_state() -> None:
     defaults: Dict[str, object] = {
         "x": [],
         "y": [],
+        "train_pool_x": [],
+        "train_pool_y": [],
+        "test_x": [],
+        "test_y": [],
+        "relationship_scale": 1.0,
+        "dataset_config": None,
         "seed": 3305,
         "history_n": [],
         "history_slope": [],
@@ -315,34 +323,18 @@ ensure_state()
 # ============================================================
 def refresh_history(
     x_grid: np.ndarray,
-    dgp: str,
-    intercept: float,
-    slope: float,
-    noise_sd: float,
-    quad_strength: float,
-    heteroskedastic: bool,
     note: str,
 ) -> FitResults:
     x = np.array(st.session_state.x, dtype=float)
     y = np.array(st.session_state.y, dtype=float)
     fit = fit_ols(x, y, x_grid)
 
-    rng_test = np.random.default_rng(999_991)
-    x_test = np.linspace(np.min(x_grid), np.max(x_grid), 220)
-    y_test = generate_y(
-        x=x_test,
-        dgp=dgp,
-        intercept=intercept,
-        slope=slope,
-        noise_sd=noise_sd,
-        rng=rng_test,
-        quad_strength=quad_strength,
-        heteroskedastic=heteroskedastic,
-    )
+    x_test = np.array(st.session_state.test_x, dtype=float)
+    y_test = np.array(st.session_state.test_y, dtype=float)
     test = evaluate_on_test(x_test, y_test, fit.slope, fit.intercept)
 
     current_n = len(x)
-    if not st.session_state.history_n or st.session_state.history_n[-1] != current_n:
+    if not st.session_state.history_n or st.session_state.history_n[-1] != current_n or note == "outlier":
         st.session_state.history_n.append(current_n)
         st.session_state.history_slope.append(fit.slope)
         st.session_state.history_intercept.append(fit.intercept)
@@ -356,6 +348,8 @@ def refresh_history(
 
 
 def reset_simulation(
+    total_sample_size: int,
+    train_percent: int,
     n_initial: int,
     x_min: float,
     x_max: float,
@@ -366,11 +360,13 @@ def reset_simulation(
     quad_strength: float,
     heteroskedastic: bool,
     x_grid: np.ndarray,
+    dataset_config: Tuple[object, ...],
 ) -> FitResults:
     rng = np.random.default_rng(int(st.session_state.seed))
-    x = rng.uniform(x_min, x_max, size=n_initial)
-    y = generate_y(
-        x=x,
+    all_x = rng.uniform(x_min, x_max, size=total_sample_size)
+    relationship_scale = float(np.std(all_x)) if np.std(all_x) > 1e-9 else 1.0
+    all_y = generate_y(
+        x=all_x,
         dgp=dgp,
         intercept=intercept,
         slope=slope,
@@ -378,9 +374,29 @@ def reset_simulation(
         rng=rng,
         quad_strength=quad_strength,
         heteroskedastic=heteroskedastic,
+        relationship_scale=relationship_scale,
     )
-    st.session_state.x = list(map(float, x))
-    st.session_state.y = list(map(float, y))
+
+    n_train = int(round(total_sample_size * train_percent / 100.0))
+    n_train = min(max(n_train, 3), total_sample_size - 2)
+    shuffled_indices = rng.permutation(total_sample_size)
+    train_indices = shuffled_indices[:n_train]
+    test_indices = shuffled_indices[n_train:]
+
+    train_x = all_x[train_indices]
+    train_y = all_y[train_indices]
+    test_x = all_x[test_indices]
+    test_y = all_y[test_indices]
+    active_n = min(max(n_initial, 3), n_train)
+
+    st.session_state.train_pool_x = list(map(float, train_x))
+    st.session_state.train_pool_y = list(map(float, train_y))
+    st.session_state.test_x = list(map(float, test_x))
+    st.session_state.test_y = list(map(float, test_y))
+    st.session_state.x = list(map(float, train_x[:active_n]))
+    st.session_state.y = list(map(float, train_y[:active_n]))
+    st.session_state.relationship_scale = relationship_scale
+    st.session_state.dataset_config = dataset_config
     st.session_state.history_n = []
     st.session_state.history_slope = []
     st.session_state.history_intercept = []
@@ -390,62 +406,42 @@ def reset_simulation(
     st.session_state.history_test_r2 = []
     st.session_state.history_mae = []
     st.session_state.history_note = []
-    return refresh_history(x_grid, dgp, intercept, slope, noise_sd, quad_strength, heteroskedastic, note="reset")
+    return refresh_history(x_grid, note="reset")
 
 
 def add_points(
     k: int,
-    x_min: float,
-    x_max: float,
-    dgp: str,
-    intercept: float,
-    slope: float,
-    noise_sd: float,
-    quad_strength: float,
-    heteroskedastic: bool,
     x_grid: np.ndarray,
     note: str,
 ) -> FitResults:
-    rng = np.random.default_rng(int(st.session_state.seed) + 10_007 * len(st.session_state.x) + k)
-    new_x = rng.uniform(x_min, x_max, size=k)
-    new_y = generate_y(
-        x=new_x,
-        dgp=dgp,
-        intercept=intercept,
-        slope=slope,
-        noise_sd=noise_sd,
-        rng=rng,
-        quad_strength=quad_strength,
-        heteroskedastic=heteroskedastic,
-    )
-    st.session_state.x.extend(map(float, new_x))
-    st.session_state.y.extend(map(float, new_y))
-    return refresh_history(x_grid, dgp, intercept, slope, noise_sd, quad_strength, heteroskedastic, note=note)
+    start = len(st.session_state.x)
+    stop = min(start + k, len(st.session_state.train_pool_x))
+    if stop > start:
+        st.session_state.x.extend(st.session_state.train_pool_x[start:stop])
+        st.session_state.y.extend(st.session_state.train_pool_y[start:stop])
+    return refresh_history(x_grid, note=note)
 
 
 def inject_outlier(
-    x_min: float,
-    x_max: float,
-    intercept: float,
-    slope: float,
     noise_sd: float,
     x_grid: np.ndarray,
-    dgp: str,
-    quad_strength: float,
-    heteroskedastic: bool,
     strength: float,
 ) -> FitResults:
     rng = np.random.default_rng(int(st.session_state.seed) + 777_777 + len(st.session_state.x))
     direction = float(rng.choice([-1.0, 1.0]))
-    if rng.random() < 0.5:
-        ox = float(x_max if rng.random() < 0.5 else x_min)
+    next_index = len(st.session_state.x)
+    if next_index < len(st.session_state.train_pool_x):
+        ox = float(st.session_state.train_pool_x[next_index])
+        baseline = float(st.session_state.train_pool_y[next_index])
+        oy = float(baseline + direction * strength * noise_sd * (1.0 + rng.random()))
+        st.session_state.x.append(ox)
+        st.session_state.y.append(oy)
     else:
-        ox = float(rng.uniform(x_min, x_max))
-    baseline = intercept + slope * ox
-    oy = float(baseline + direction * strength * noise_sd * (1.0 + rng.random()))
-    st.session_state.x.append(ox)
-    st.session_state.y.append(oy)
-    return refresh_history(x_grid, dgp, intercept, slope, noise_sd, quad_strength, heteroskedastic, note="outlier")
+        target_index = int(rng.integers(0, len(st.session_state.y)))
+        st.session_state.y[target_index] = float(
+            st.session_state.y[target_index] + direction * strength * noise_sd * (1.0 + rng.random())
+        )
+    return refresh_history(x_grid, note="outlier")
 
 
 # ============================================================
@@ -500,12 +496,35 @@ with st.sidebar:
 
     st.markdown("---")
     x_min, x_max = st.slider("x-range", -25.0, 25.0, (-10.0, 10.0), 0.5)
+    total_sample_size = st.slider(
+        "Total sample size",
+        20,
+        1000,
+        120,
+        10,
+        help="The complete dataset generated before it is randomly divided into training and test samples.",
+    )
+    train_percent = st.slider(
+        "Train/test split (% training)",
+        50,
+        90,
+        80,
+        5,
+        help="The percentage of the total sample assigned to training. The remaining observations form the test holdout.",
+    )
     n_initial = st.slider("Initial sample size", 3, 80, 6, 1)
     add_k = st.slider("Points added per click", 1, 200, 10, 1)
     outlier_strength = st.slider("Outlier strength", 2.0, 12.0, 5.5, 0.5)
     st.session_state.seed = int(st.number_input("Random seed", min_value=1, max_value=999999, value=int(st.session_state.seed), step=1))
 
     x_grid = np.linspace(x_min, x_max, 260)
+    planned_train_size = int(round(total_sample_size * train_percent / 100.0))
+    planned_train_size = min(max(planned_train_size, 3), total_sample_size - 2)
+    planned_test_size = total_sample_size - planned_train_size
+    st.caption(
+        f"Split: {planned_train_size} training observations and {planned_test_size} test observations. "
+        "Add controls reveal more of the fixed training sample."
+    )
 
     st.markdown("---")
     col_a, col_b = st.columns(2)
@@ -523,39 +542,32 @@ with st.sidebar:
     auto_steps = st.slider("Auto-grow steps", 2, 40, 8, 1)
     auto_clicked = st.button("Run auto-growth", key="run_auto_growth", use_container_width=True)
 
-    st.caption("Tip: after changing the true process, press Reset so the sample is regenerated from the new world.")
+    st.caption("Changing a data or split control automatically generates the corresponding fixed dataset.")
 
 
 # ============================================================
 # Apply controls
 # ============================================================
-if not st.session_state.x:
-    fit = reset_simulation(
-        n_initial=n_initial,
-        x_min=x_min,
-        x_max=x_max,
-        dgp=dgp,
-        intercept=true_intercept,
-        slope=true_slope,
-        noise_sd=noise_sd,
-        quad_strength=quad_strength,
-        heteroskedastic=heteroskedastic,
-        x_grid=x_grid,
-    )
-else:
-    fit = refresh_history(
-        x_grid=x_grid,
-        dgp=dgp,
-        intercept=true_intercept,
-        slope=true_slope,
-        noise_sd=noise_sd,
-        quad_strength=quad_strength,
-        heteroskedastic=heteroskedastic,
-        note="view",
-    )
+dataset_config = (
+    int(total_sample_size),
+    int(train_percent),
+    int(n_initial),
+    float(x_min),
+    float(x_max),
+    dgp,
+    float(true_intercept),
+    float(true_slope),
+    float(noise_sd),
+    float(quad_strength),
+    bool(heteroskedastic),
+    int(st.session_state.seed),
+)
+needs_reset = not st.session_state.x or st.session_state.dataset_config != dataset_config
 
-if reset_clicked:
+if needs_reset or reset_clicked:
     fit = reset_simulation(
+        total_sample_size=total_sample_size,
+        train_percent=train_percent,
         n_initial=n_initial,
         x_min=x_min,
         x_max=x_max,
@@ -566,63 +578,38 @@ if reset_clicked:
         quad_strength=quad_strength,
         heteroskedastic=heteroskedastic,
         x_grid=x_grid,
+        dataset_config=dataset_config,
     )
 elif add_clicked:
     fit = add_points(
         k=add_k,
-        x_min=x_min,
-        x_max=x_max,
-        dgp=dgp,
-        intercept=true_intercept,
-        slope=true_slope,
-        noise_sd=noise_sd,
-        quad_strength=quad_strength,
-        heteroskedastic=heteroskedastic,
         x_grid=x_grid,
         note=f"add_{add_k}",
     )
 elif add_one_clicked:
     fit = add_points(
         k=1,
-        x_min=x_min,
-        x_max=x_max,
-        dgp=dgp,
-        intercept=true_intercept,
-        slope=true_slope,
-        noise_sd=noise_sd,
-        quad_strength=quad_strength,
-        heteroskedastic=heteroskedastic,
         x_grid=x_grid,
         note="add_1",
     )
 elif outlier_clicked:
     fit = inject_outlier(
-        x_min=x_min,
-        x_max=x_max,
-        intercept=true_intercept,
-        slope=true_slope,
         noise_sd=noise_sd,
         x_grid=x_grid,
-        dgp=dgp,
-        quad_strength=quad_strength,
-        heteroskedastic=heteroskedastic,
         strength=outlier_strength,
     )
 elif auto_clicked:
     for _ in range(auto_steps):
+        prior_n = len(st.session_state.x)
         fit = add_points(
             k=add_k,
-            x_min=x_min,
-            x_max=x_max,
-            dgp=dgp,
-            intercept=true_intercept,
-            slope=true_slope,
-            noise_sd=noise_sd,
-            quad_strength=quad_strength,
-            heteroskedastic=heteroskedastic,
             x_grid=x_grid,
             note=f"auto_{add_k}",
         )
+        if len(st.session_state.x) == prior_n:
+            break
+else:
+    fit = refresh_history(x_grid=x_grid, note="view")
 
 x = np.array(st.session_state.x, dtype=float)
 y = np.array(st.session_state.y, dtype=float)
@@ -637,22 +624,13 @@ true_line = generate_y(
     rng=np.random.default_rng(1234),
     quad_strength=quad_strength,
     heteroskedastic=False,
+    relationship_scale=float(st.session_state.relationship_scale),
 )
 est_line = fit.intercept + fit.slope * x_grid
 
-# Test set for current snapshot
-rng_test = np.random.default_rng(999_991)
-x_test = np.linspace(x_min, x_max, 220)
-y_test = generate_y(
-    x=x_test,
-    dgp=dgp,
-    intercept=true_intercept,
-    slope=true_slope,
-    noise_sd=noise_sd,
-    rng=rng_test,
-    quad_strength=quad_strength,
-    heteroskedastic=heteroskedastic,
-)
+# Fixed held-out test set for the current dataset
+x_test = np.array(st.session_state.test_x, dtype=float)
+y_test = np.array(st.session_state.test_y, dtype=float)
 test_results = evaluate_on_test(x_test, y_test, fit.slope, fit.intercept)
 
 history_df = pd.DataFrame(
@@ -674,7 +652,7 @@ history_df = pd.DataFrame(
 # ============================================================
 metric_cols = st.columns(6)
 metric_items = [
-    ("Sample size", f"{len(x)}"),
+    ("Training used", f"{len(x)} / {len(st.session_state.train_pool_x)}"),
     ("Slope estimate", safe_float(fit.slope)),
     ("Intercept estimate", safe_float(fit.intercept)),
     ("Train RMSE", safe_float(fit.rmse)),
@@ -691,6 +669,11 @@ for col, (label, value) in zip(metric_cols, metric_items):
         """,
         unsafe_allow_html=True,
     )
+
+st.caption(
+    f"Total sample: {total_sample_size} · Training allocation: {len(st.session_state.train_pool_x)} "
+    f"· Test holdout: {len(x_test)} · OLS currently uses {len(x)} revealed training observations."
+)
 
 st.markdown(
     f"""
@@ -963,13 +946,12 @@ with tab4:
         guess_residuals = y - guess_y_hat
         guess_sse = float(np.sum(guess_residuals**2))
         guess_rmse = float(np.sqrt(np.mean(guess_residuals**2)))
-        guess_mae = float(np.mean(np.abs(guess_residuals)))
-        guess_r2 = compute_r2(y, guess_y_hat)
+        guess_test_results = evaluate_on_test(x_test, y_test, guess_slope, guess_intercept)
         guess_truth_rmse = float(np.sqrt(np.mean((guess_line - true_line) ** 2)))
         ols_truth_rmse = float(np.sqrt(np.mean((est_line - true_line) ** 2)))
         gap = guess_sse - fit.sse
 
-        relationship_scale = float(np.std(x_grid)) if np.std(x_grid) > 1e-9 else 1.0
+        relationship_scale = float(st.session_state.relationship_scale)
         if dgp == "Linear":
             true_formula = rf"E[y \mid x] = {true_intercept:.2f} {true_slope:+.2f}x"
         elif dgp == "Quadratic (misspecified for OLS)":
@@ -989,18 +971,20 @@ with tab4:
             [
                 {
                     "Line": "Student-fitted",
-                    "SSE": guess_sse,
-                    "RMSE": guess_rmse,
-                    "MAE": guess_mae,
-                    "R²": guess_r2,
+                    "Train SSE": guess_sse,
+                    "Train RMSE": guess_rmse,
+                    "Test RMSE": guess_test_results.rmse,
+                    "Test MAE": guess_test_results.mae,
+                    "Test R²": guess_test_results.r2,
                     "True-relationship RMSE": guess_truth_rmse,
                 },
                 {
                     "Line": "OLS-fitted",
-                    "SSE": fit.sse,
-                    "RMSE": fit.rmse,
-                    "MAE": fit.mae,
-                    "R²": fit.r2,
+                    "Train SSE": fit.sse,
+                    "Train RMSE": fit.rmse,
+                    "Test RMSE": test_results.rmse,
+                    "Test MAE": test_results.mae,
+                    "Test R²": test_results.r2,
                     "True-relationship RMSE": ols_truth_rmse,
                 },
             ]
@@ -1061,7 +1045,7 @@ with tab4:
 
             st.markdown("**Error comparison**")
             st.caption(
-                "SSE, RMSE, MAE, and R² use the current observed sample. "
+                "Training metrics use the revealed training observations; test metrics use the fixed held-out sample. "
                 "True-relationship RMSE compares each fitted line with the noise-free relationship across the plotted x-range."
             )
             st.dataframe(error_metrics, hide_index=True, width="stretch")
