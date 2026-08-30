@@ -710,9 +710,9 @@ st.markdown(
 tab1, tab2, tab3, tab4 = st.tabs(["Playground", "Convergence & Generalization", "Diagnostics", "Student Challenge"])
 
 with tab1:
-    left, right = st.columns((1.65, 1.0))
+    plot_area = st.container()
 
-    with left:
+    with plot_area:
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
@@ -778,41 +778,6 @@ with tab1:
             yaxis_title="y",
         )
         st.plotly_chart(fig, use_container_width=True)
-
-    with right:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.subheader("What students should notice")
-        st.markdown(
-            """
-            1. **Early estimates jump around** because small samples are noisy.  
-            2. **More data stabilizes the slope and intercept** when the true relationship is linear.  
-            3. **Confidence and prediction bands narrow** as uncertainty falls.  
-            4. **Outliers can still bend OLS sharply** because squared errors give them extra weight.  
-            5. **More data does not cure misspecification** when the true pattern is not linear.
-            """
-        )
-        st.markdown(
-            f"""
-            <div class="small-note">
-            Estimated model right now: ŷ = {fit.intercept:.3f} + {fit.slope:.3f}x
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("")
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.subheader("Quick teaching prompts")
-        st.markdown(
-            """
-            - Ask students to predict whether the next 20 points will change the slope a lot or a little.  
-            - Increase the noise and ask why convergence gets slower.  
-            - Switch to a quadratic world and ask whether OLS is improving or merely settling on the best straight-line compromise.  
-            - Inject an outlier and ask which coefficient will be hit harder: slope or intercept.
-            """
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
 
 with tab2:
     c1, c2 = st.columns(2)
@@ -1052,27 +1017,3 @@ with tab4:
             """
         )
     st.markdown("</div>", unsafe_allow_html=True)
-
-
-# ============================================================
-# Footer notes
-# ============================================================
-with st.expander("Instructor notes and suggested classroom flow"):
-    st.markdown(
-        """
-        **Recommended sequence for a live class demo**
-
-        1. Start in a linear world with 5–6 points and ask students to estimate the slope by eye.  
-        2. Add 1 point at a time so they can feel the instability of tiny samples.  
-        3. Switch to larger batches and discuss why the estimate settles down.  
-        4. Turn up noise and compare how much slower convergence becomes.  
-        5. Inject an outlier and ask whether OLS is robust.  
-        6. Switch to a quadratic world and ask whether more data is helping OLS become “right,” or just helping it find the best straight-line approximation.  
-        7. End with the Student Challenge tab to make the sum-of-squared-errors objective tangible.
-
-        **Core learning objective**
-
-        OLS improves with more data when the underlying relationship is stable and approximately linear because the parameter estimates become less variable.
-        But more data does **not** fix outliers, heteroskedasticity, or model misspecification by itself.
-        """
-    )
