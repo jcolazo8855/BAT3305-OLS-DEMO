@@ -950,7 +950,7 @@ with tab4:
         "Show true relationship",
         value=False,
         key="show_true_relationship",
-        help="Reveal the data-generating relationship, its formula, and error metrics for your line and the OLS-fitted line.",
+        help="Reveal the true formula, the OLS benchmark line, and error metrics for your line and the OLS-fitted line.",
     )
 
     g1, g2 = st.columns([1.25, 1.0])
@@ -1035,18 +1035,9 @@ with tab4:
                     line=dict(width=4),
                 )
             )
-            guess_fig.add_trace(
-                go.Scatter(
-                    x=x_grid,
-                    y=true_line,
-                    mode="lines",
-                    name="True relationship",
-                    line=dict(width=3, dash="dot"),
-                )
-            )
         guess_fig.update_layout(
             title=(
-                "Your line, the OLS solution, and the true relationship"
+                "Your line and the OLS solution"
                 if show_true_relationship
                 else "Your fitted line"
             ),
