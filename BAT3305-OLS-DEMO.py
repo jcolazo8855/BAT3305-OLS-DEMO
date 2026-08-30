@@ -510,18 +510,18 @@ with st.sidebar:
     st.markdown("---")
     col_a, col_b = st.columns(2)
     with col_a:
-        reset_clicked = st.button("Reset", use_container_width=True)
+        reset_clicked = st.button("Reset", key="reset_simulation", use_container_width=True)
     with col_b:
-        add_clicked = st.button(f"Add {add_k}", use_container_width=True)
+        add_clicked = st.button(f"Add {add_k}", key="add_batch", use_container_width=True)
 
     col_c, col_d = st.columns(2)
     with col_c:
-        add_one_clicked = st.button("Add 1", use_container_width=True)
+        add_one_clicked = st.button("Add 1", key="add_single", use_container_width=True)
     with col_d:
-        outlier_clicked = st.button("Outlier", use_container_width=True)
+        outlier_clicked = st.button("Outlier", key="inject_outlier", use_container_width=True)
 
     auto_steps = st.slider("Auto-grow steps", 2, 40, 8, 1)
-    auto_clicked = st.button("Run auto-growth", use_container_width=True)
+    auto_clicked = st.button("Run auto-growth", key="run_auto_growth", use_container_width=True)
 
     st.caption("Tip: after changing the true process, press Reset so the sample is regenerated from the new world.")
 
