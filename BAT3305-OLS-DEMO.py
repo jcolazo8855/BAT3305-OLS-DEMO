@@ -1019,15 +1019,6 @@ with tab4:
         guess_fig.add_trace(
             go.Scatter(
                 x=x_grid,
-                y=est_line,
-                mode="lines",
-                name="OLS line",
-                line=dict(width=4),
-            )
-        )
-        guess_fig.add_trace(
-            go.Scatter(
-                x=x_grid,
                 y=guess_line,
                 mode="lines",
                 name="Your line",
@@ -1035,6 +1026,15 @@ with tab4:
             )
         )
         if show_true_relationship:
+            guess_fig.add_trace(
+                go.Scatter(
+                    x=x_grid,
+                    y=est_line,
+                    mode="lines",
+                    name="OLS line",
+                    line=dict(width=4),
+                )
+            )
             guess_fig.add_trace(
                 go.Scatter(
                     x=x_grid,
@@ -1048,7 +1048,7 @@ with tab4:
             title=(
                 "Your line, the OLS solution, and the true relationship"
                 if show_true_relationship
-                else "Your line versus the OLS solution"
+                else "Your fitted line"
             ),
             template="plotly_white",
             height=430,
