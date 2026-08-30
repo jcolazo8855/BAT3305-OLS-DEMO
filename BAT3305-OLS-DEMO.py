@@ -944,7 +944,13 @@ with tab4:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.subheader("Can students beat OLS?")
     st.markdown(
-        "Use the sliders to create a human-chosen line. Compare its SSE with the OLS solution. This makes the optimization target concrete."
+        "Use the sliders to create a human-chosen line. Reveal the true relationship when you are ready to compare it with the OLS solution."
+    )
+    show_true_relationship = st.toggle(
+        "Show true relationship",
+        value=False,
+        key="show_true_relationship",
+        help="Reveal the data-generating relationship, its formula, and error metrics for your line and the OLS-fitted line.",
     )
 
     g1, g2 = st.columns([1.25, 1.0])
@@ -954,8 +960,51 @@ with tab4:
 
         guess_line = guess_intercept + guess_slope * x_grid
         guess_y_hat = guess_intercept + guess_slope * x
-        guess_sse = float(np.sum((y - guess_y_hat) ** 2))
+        guess_residuals = y - guess_y_hat
+        guess_sse = float(np.sum(guess_residuals**2))
+        guess_rmse = float(np.sqrt(np.mean(guess_residuals**2)))
+        guess_mae = float(np.mean(np.abs(guess_residuals)))
+        guess_r2 = compute_r2(y, guess_y_hat)
+        guess_truth_rmse = float(np.sqrt(np.mean((guess_line - true_line) ** 2)))
+        ols_truth_rmse = float(np.sqrt(np.mean((est_line - true_line) ** 2)))
         gap = guess_sse - fit.sse
+
+        relationship_scale = float(np.std(x_grid)) if np.std(x_grid) > 1e-9 else 1.0
+        if dgp == "Linear":
+            true_formula = rf"E[y \mid x] = {true_intercept:.2f} {true_slope:+.2f}x"
+        elif dgp == "Quadratic (misspecified for OLS)":
+            effective_quadratic = quad_strength / relationship_scale**2
+            true_formula = rf"E[y \mid x] = {true_intercept:.2f} {true_slope:+.2f}x {effective_quadratic:+.3f}x^2"
+        else:
+            left_slope = true_slope + 0.75 * quad_strength / relationship_scale
+            right_slope = true_slope - 0.75 * quad_strength / relationship_scale
+            true_formula = (
+                rf"E[y \mid x] = \begin{{cases}}"
+                rf"{true_intercept:.2f} {left_slope:+.2f}x, & x < 0 \\ "
+                rf"{true_intercept:.2f} {right_slope:+.2f}x, & x \ge 0"
+                rf"\end{{cases}}"
+            )
+
+        error_metrics = pd.DataFrame(
+            [
+                {
+                    "Line": "Student-fitted",
+                    "SSE": guess_sse,
+                    "RMSE": guess_rmse,
+                    "MAE": guess_mae,
+                    "R²": guess_r2,
+                    "True-relationship RMSE": guess_truth_rmse,
+                },
+                {
+                    "Line": "OLS-fitted",
+                    "SSE": fit.sse,
+                    "RMSE": fit.rmse,
+                    "MAE": fit.mae,
+                    "R²": fit.r2,
+                    "True-relationship RMSE": ols_truth_rmse,
+                },
+            ]
+        ).round(3)
 
         guess_fig = go.Figure()
         guess_fig.add_trace(
@@ -985,8 +1034,22 @@ with tab4:
                 line=dict(width=3, dash="dash"),
             )
         )
+        if show_true_relationship:
+            guess_fig.add_trace(
+                go.Scatter(
+                    x=x_grid,
+                    y=true_line,
+                    mode="lines",
+                    name="True relationship",
+                    line=dict(width=3, dash="dot"),
+                )
+            )
         guess_fig.update_layout(
-            title="Your line versus the OLS solution",
+            title=(
+                "Your line, the OLS solution, and the true relationship"
+                if show_true_relationship
+                else "Your line versus the OLS solution"
+            ),
             template="plotly_white",
             height=430,
             margin=dict(l=10, r=10, t=55, b=10),
@@ -996,17 +1059,31 @@ with tab4:
         st.plotly_chart(guess_fig, use_container_width=True)
 
     with g2:
-        better_text = "Perfect match with OLS" if abs(gap) < 1e-9 else ("Above OLS" if gap > 0 else "Below OLS")
-        st.markdown(
-            f"""
-            <div class="teacher-box">
-            <strong>Your SSE:</strong> {guess_sse:.3f}<br>
-            <strong>OLS SSE:</strong> {fit.sse:.3f}<br>
-            <strong>Gap:</strong> {gap:.3f} ({better_text})
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        if show_true_relationship:
+            better_text = "Perfect match with OLS" if abs(gap) < 1e-9 else ("Above OLS" if gap > 0 else "Below OLS")
+            st.markdown("**True relationship**")
+            st.latex(true_formula)
+            if heteroskedastic:
+                st.caption("Observed y also includes normally distributed error whose standard deviation increases with |x|.")
+            else:
+                st.caption(f"Observed y also includes normal error with standard deviation {noise_sd:.2f}.")
+
+            st.markdown("**Error comparison**")
+            st.caption(
+                "SSE, RMSE, MAE, and R² use the current observed sample. "
+                "True-relationship RMSE compares each fitted line with the noise-free relationship across the plotted x-range."
+            )
+            st.dataframe(error_metrics, hide_index=True, width="stretch")
+            st.markdown(
+                f"""
+                <div class="teacher-box">
+                <strong>Training SSE gap:</strong> {gap:.3f} ({better_text})
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("Fit your line first, then turn on **Show true relationship** to reveal the formula and comparison metrics.")
         st.markdown(
             """
             **Discussion prompts**
