@@ -9,12 +9,22 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from regularization import (
+    coefficient_path,
+    comparison_table,
+    fit_regularized,
+    predict_positive,
+    prepare_data,
+    regression_metrics,
+    simulate_business_data,
+)
+
 
 # ============================================================
 # Page config
 # ============================================================
 st.set_page_config(
-    page_title="BAT 3305 - Colazo | OLS Learning Lab",
+    page_title="BAT 3305 - Colazo | Regression Learning Lab",
     page_icon="📈",
     layout="wide",
 )
@@ -326,6 +336,302 @@ def ensure_state() -> None:
 ensure_state()
 
 
+def render_regularization_tab(kind: str, key_prefix: str, default_log_alpha: float) -> None:
+    """Render a self-contained Ridge or LASSO learning simulation."""
+    model_name = "Ridge" if kind == "Ridge" else "LASSO"
+    penalty_name = "squared-coefficient" if kind == "Ridge" else "absolute-coefficient"
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.subheader(f"{model_name} regression tuning lab")
+    if kind == "Ridge":
+        st.markdown(
+            "Ridge shrinks correlated predictors together. Tune **α** and watch coefficient magnitudes, "
+            "test error, and proportional-error metrics change relative to unpenalized OLS."
+        )
+    else:
+        st.markdown(
+            "LASSO can shrink weak predictors exactly to zero. Tune **α** and study the tradeoff between "
+            "feature selection, prediction error, and model simplicity."
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    control_columns = st.columns(3)
+    with control_columns[0]:
+        log_alpha = st.slider(
+            "log₁₀ penalty (α)",
+            -4.0,
+            1.5,
+            default_log_alpha,
+            0.1,
+            key=f"{key_prefix}_log_alpha",
+            help="The fitted penalty is 10 raised to this value. Move right for stronger shrinkage.",
+        )
+        alpha = 10.0**log_alpha
+        total_n = st.slider(
+            "Simulated sample size",
+            80,
+            600,
+            240,
+            20,
+            key=f"{key_prefix}_sample_size",
+        )
+    with control_columns[1]:
+        train_share = st.slider(
+            "Training share (%)",
+            60,
+            90,
+            75,
+            5,
+            key=f"{key_prefix}_train_share",
+        )
+        relevant_predictors = st.slider(
+            "Predictors with a true signal",
+            1,
+            6,
+            3,
+            1,
+            key=f"{key_prefix}_relevant",
+            help="The remaining simulated predictors are noise variables with a true coefficient of zero.",
+        )
+    with control_columns[2]:
+        correlation = st.slider(
+            "Predictor correlation",
+            0.0,
+            0.9,
+            0.65,
+            0.05,
+            key=f"{key_prefix}_correlation",
+        )
+        outcome_noise = st.slider(
+            "Outcome noise",
+            0.05,
+            0.80,
+            0.25,
+            0.05,
+            key=f"{key_prefix}_noise",
+        )
+    simulation_seed = int(
+        st.number_input(
+            "Simulation seed",
+            min_value=1,
+            max_value=999999,
+            value=441 if kind == "Ridge" else 442,
+            step=1,
+            key=f"{key_prefix}_seed",
+        )
+    )
+
+    data = simulate_business_data(
+        seed=simulation_seed,
+        total_sample_size=total_n,
+        train_percent=train_share,
+        relevant_predictors=relevant_predictors,
+        correlation=correlation,
+        noise_sd=outcome_noise,
+    )
+    prepared = prepare_data(data)
+    selected_model = fit_regularized(prepared, kind=kind, alpha=alpha)
+    ols_model = fit_regularized(prepared, kind="OLS", alpha=0.0)
+    selected_test_predictions = predict_positive(selected_model, prepared.x_test_standardized)
+    selected_test_metrics = regression_metrics(data.y_test, selected_test_predictions)
+    comparison = comparison_table(data, prepared, selected_model).round(4)
+
+    coefficient_norm = float(np.linalg.norm(selected_model.coefficients))
+    ols_norm = float(np.linalg.norm(ols_model.coefficients))
+    zero_count = int(np.sum(np.abs(selected_model.coefficients) < 1e-6))
+    summary_columns = st.columns(5)
+    summary_items = [
+        ("Selected α", f"{alpha:.4g}"),
+        ("Test RMSLE", f"{selected_test_metrics['RMSLE']:.4f}"),
+        ("Test mean APE", f"{selected_test_metrics['Mean APE (%)']:.2f}%"),
+        ("Test R²", f"{selected_test_metrics['R²']:.3f}"),
+        (
+            "Exact zero coefficients" if kind == "LASSO" else "Coefficient norm",
+            str(zero_count) if kind == "LASSO" else f"{coefficient_norm:.3f}",
+        ),
+    ]
+    for column, (label, value) in zip(summary_columns, summary_items):
+        column.metric(label, value)
+
+    st.caption(
+        f"Positive simulated outcome · {len(data.y_train)} training and {len(data.y_test)} test observations · "
+        f"six standardized predictors · {penalty_name} penalty."
+    )
+
+    top_left, top_right = st.columns([1.05, 0.95])
+    with top_left:
+        st.markdown("#### Model comparison")
+        st.dataframe(comparison, hide_index=True, width="stretch")
+        st.caption(
+            "RMSLE compares log(1 + actual) with log(1 + predicted), so proportional misses matter more "
+            "than the largest raw-value misses. APE is the absolute percentage error for each observation; "
+            "its mean can be sensitive when actual values are small."
+        )
+
+    with top_right:
+        st.markdown("#### What the current penalty did")
+        if kind == "Ridge":
+            shrinkage = 0.0 if ols_norm <= 1e-12 else 100.0 * (1.0 - coefficient_norm / ols_norm)
+            st.info(
+                f"The combined coefficient magnitude is **{shrinkage:.1f}% smaller** than OLS. "
+                "Ridge usually retains every predictor, even when its true signal is zero."
+            )
+        else:
+            st.info(
+                f"LASSO set **{zero_count} of 6 coefficients** to zero at this α and converged in "
+                f"{selected_model.iterations} coordinate-descent iterations."
+            )
+        st.latex(
+            r"\operatorname{RMSLE}=\sqrt{\frac{1}{n}\sum_i[\log(1+\hat y_i)-\log(1+y_i)]^2}"
+        )
+        st.latex(r"\operatorname{APE}_i=\left|\frac{y_i-\hat y_i}{y_i}\right|\times100\%")
+
+    standardized_truth = data.true_coefficients * prepared.x_scale
+    coefficient_frame = pd.DataFrame(
+        {
+            "Feature": data.feature_names,
+            "True signal": standardized_truth,
+            "OLS": ols_model.coefficients,
+            model_name: selected_model.coefficients,
+        }
+    )
+    coefficient_figure = go.Figure()
+    for column_name, color in (("True signal", "#0f172a"), ("OLS", "#f59e0b"), (model_name, "#2563eb")):
+        coefficient_figure.add_trace(
+            go.Bar(
+                x=coefficient_frame["Feature"],
+                y=coefficient_frame[column_name],
+                name=column_name,
+                marker_color=color,
+            )
+        )
+    coefficient_figure.update_layout(
+        title="Standardized coefficients: truth, OLS, and the tuned model",
+        barmode="group",
+        template="plotly_white",
+        height=430,
+        margin=dict(l=10, r=10, t=55, b=80),
+        yaxis_title="Coefficient on log(1 + outcome)",
+    )
+
+    log_alpha_grid = np.linspace(-4.0, 1.5, 46)
+    path = coefficient_path(prepared, kind=kind, log10_alphas=log_alpha_grid)
+    path_figure = go.Figure()
+    for feature_index, feature_name in enumerate(data.feature_names):
+        path_figure.add_trace(
+            go.Scatter(
+                x=log_alpha_grid,
+                y=path[:, feature_index],
+                mode="lines",
+                name=feature_name,
+                hovertemplate=f"{feature_name}<br>log₁₀ α=%{{x:.1f}}<br>coefficient=%{{y:.3f}}<extra></extra>",
+            )
+        )
+    path_figure.add_vline(x=log_alpha, line_dash="dash", line_color="#0f172a", annotation_text="Selected α")
+    path_figure.update_layout(
+        title=f"{model_name} coefficient path",
+        template="plotly_white",
+        height=430,
+        margin=dict(l=10, r=10, t=55, b=10),
+        xaxis_title="log₁₀ penalty (α)",
+        yaxis_title="Standardized coefficient",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+
+    chart_left, chart_right = st.columns(2)
+    with chart_left:
+        st.plotly_chart(coefficient_figure, width="stretch")
+    with chart_right:
+        st.plotly_chart(path_figure, width="stretch")
+
+    test_ape = np.abs(data.y_test - selected_test_predictions) / np.maximum(data.y_test, 1e-12) * 100.0
+    prediction_figure = go.Figure()
+    prediction_figure.add_trace(
+        go.Scatter(
+            x=data.y_test,
+            y=selected_test_predictions,
+            mode="markers",
+            name=f"{model_name} predictions",
+            marker=dict(
+                size=9,
+                color=test_ape,
+                colorscale="Viridis",
+                showscale=True,
+                colorbar=dict(title="APE %"),
+                line=dict(width=0.5, color="rgba(15,23,42,0.35)"),
+            ),
+            customdata=test_ape,
+            hovertemplate="Actual=%{x:.2f}<br>Predicted=%{y:.2f}<br>APE=%{customdata:.2f}%<extra></extra>",
+        )
+    )
+    lower = float(min(np.min(data.y_test), np.min(selected_test_predictions)))
+    upper = float(max(np.max(data.y_test), np.max(selected_test_predictions)))
+    prediction_figure.add_trace(
+        go.Scatter(
+            x=[lower, upper],
+            y=[lower, upper],
+            mode="lines",
+            name="Perfect prediction",
+            line=dict(dash="dash", color="#0f172a"),
+        )
+    )
+    prediction_figure.update_layout(
+        title=f"{model_name} test predictions colored by APE",
+        template="plotly_white",
+        height=430,
+        margin=dict(l=10, r=10, t=55, b=10),
+        xaxis_title="Actual positive outcome",
+        yaxis_title="Predicted positive outcome",
+    )
+
+    ape_figure = go.Figure(
+        go.Histogram(
+            x=test_ape,
+            nbinsx=24,
+            marker_color="#2563eb",
+            hovertemplate="APE bin=%{x:.1f}%<br>Observations=%{y}<extra></extra>",
+        )
+    )
+    ape_figure.add_vline(
+        x=float(np.mean(test_ape)),
+        line_dash="dash",
+        line_color="#dc2626",
+        annotation_text="Mean APE",
+    )
+    ape_figure.update_layout(
+        title="Distribution of observation-level APE",
+        template="plotly_white",
+        height=430,
+        margin=dict(l=10, r=10, t=55, b=10),
+        xaxis_title="Absolute percentage error (%)",
+        yaxis_title="Test observations",
+    )
+    result_left, result_right = st.columns(2)
+    with result_left:
+        st.plotly_chart(prediction_figure, width="stretch")
+    with result_right:
+        st.plotly_chart(ape_figure, width="stretch")
+
+    with st.expander("Student exploration prompts"):
+        if kind == "Ridge":
+            st.markdown(
+                """
+                1. Raise predictor correlation. Does Ridge become more competitive with OLS on the test sample?
+                2. Increase α until test RMSLE begins to worsen. What happened to the coefficient path?
+                3. Reduce the sample size and change the seed. Which method is more stable across simulated samples?
+                4. Explain why Ridge shrinks noise predictors but rarely removes them exactly.
+                """
+            )
+        else:
+            st.markdown(
+                """
+                1. Increase α until LASSO finds the correct number of relevant predictors. Did test RMSLE improve?
+                2. Raise predictor correlation. Does LASSO consistently choose the same member of a correlated group?
+                3. Increase outcome noise. How does the selected set of nonzero coefficients change?
+                4. Find an α that makes the model simpler without materially worsening test RMSLE or mean APE.
+                """
+            )
+
+
 # ============================================================
 # Simulation functions
 # ============================================================
@@ -459,12 +765,13 @@ st.markdown(
     """
     <div class="hero">
         <h1>BAT 3305 - Colazo</h1>
-        <h3>Interactive OLS Regression Studio</h3>
+        <h3>Interactive OLS, Ridge, and LASSO Regression Studio</h3>
         <p>
             Explore how ordinary least squares becomes more stable as it ingests more data.
             This lab lets students observe coefficient convergence, uncertainty reduction,
             outlier sensitivity, train-versus-test behavior, and what happens when the
-            underlying data-generating process is not truly linear.
+            underlying data-generating process is not truly linear. Dedicated Ridge and LASSO
+            labs add correlated predictors, penalty tuning, feature selection, RMSLE, and APE.
         </p>
     </div>
     """,
@@ -537,18 +844,18 @@ with st.sidebar:
     st.markdown("---")
     col_a, col_b = st.columns(2)
     with col_a:
-        reset_clicked = st.button("Reset", key="reset_simulation", use_container_width=True)
+        reset_clicked = st.button("Reset", key="reset_simulation", width="stretch")
     with col_b:
-        add_clicked = st.button(f"Add {add_k}", key="add_batch", use_container_width=True)
+        add_clicked = st.button(f"Add {add_k}", key="add_batch", width="stretch")
 
     col_c, col_d = st.columns(2)
     with col_c:
-        add_one_clicked = st.button("Add 1", key="add_single", use_container_width=True)
+        add_one_clicked = st.button("Add 1", key="add_single", width="stretch")
     with col_d:
-        outlier_clicked = st.button("Outlier", key="inject_outlier", use_container_width=True)
+        outlier_clicked = st.button("Outlier", key="inject_outlier", width="stretch")
 
     auto_steps = st.slider("Auto-grow steps", 2, 40, 8, 1)
-    auto_clicked = st.button("Run auto-growth", key="run_auto_growth", use_container_width=True)
+    auto_clicked = st.button("Run auto-growth", key="run_auto_growth", width="stretch")
 
     st.caption("Changing a data or split control automatically generates the corresponding fixed dataset.")
 
@@ -698,7 +1005,16 @@ st.markdown(
 # ============================================================
 # Tabs
 # ============================================================
-tab1, tab2, tab3, tab4 = st.tabs(["Playground", "Convergence & Generalization", "Diagnostics", "Student Challenge"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    [
+        "Playground",
+        "Convergence & Generalization",
+        "Diagnostics",
+        "Ridge Regression",
+        "LASSO Regression",
+        "Student Challenge",
+    ]
+)
 
 with tab1:
     plot_area = st.container()
@@ -768,7 +1084,7 @@ with tab1:
             xaxis_title="x",
             yaxis_title="y",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 with tab2:
     c1, c2 = st.columns(2)
@@ -793,7 +1109,7 @@ with tab2:
             xaxis_title="Sample size (n)",
             yaxis_title="Slope estimate",
         )
-        st.plotly_chart(fig_coef, use_container_width=True)
+        st.plotly_chart(fig_coef, width="stretch")
 
     with c2:
         fig_fit = go.Figure()
@@ -823,7 +1139,7 @@ with tab2:
             xaxis_title="Sample size (n)",
             yaxis_title="RMSE",
         )
-        st.plotly_chart(fig_fit, use_container_width=True)
+        st.plotly_chart(fig_fit, width="stretch")
 
     c3, c4 = st.columns(2)
     with c3:
@@ -852,7 +1168,7 @@ with tab2:
             xaxis_title="Sample size (n)",
             yaxis_title="R²",
         )
-        st.plotly_chart(fig_r2, use_container_width=True)
+        st.plotly_chart(fig_r2, width="stretch")
 
     with c4:
         st.markdown('<div class="teacher-box">', unsafe_allow_html=True)
@@ -891,7 +1207,7 @@ with tab3:
             xaxis_title="Predicted value (ŷ)",
             yaxis_title="Residual",
         )
-        st.plotly_chart(residual_fig, use_container_width=True)
+        st.plotly_chart(residual_fig, width="stretch")
 
     with d2:
         influence_fig = go.Figure()
@@ -914,7 +1230,7 @@ with tab3:
             xaxis_title="Leverage",
             yaxis_title="|Residual|",
         )
-        st.plotly_chart(influence_fig, use_container_width=True)
+        st.plotly_chart(influence_fig, width="stretch")
 
     st.markdown("### Current observations and diagnostic measures")
     diag_df = pd.DataFrame(
@@ -929,9 +1245,15 @@ with tab3:
             "cooks_d": fit.cooks_distance,
         }
     ).round(4)
-    st.dataframe(diag_df, use_container_width=True, height=320)
+    st.dataframe(diag_df, width="stretch", height=320)
 
 with tab4:
+    render_regularization_tab("Ridge", "ridge", default_log_alpha=-1.0)
+
+with tab5:
+    render_regularization_tab("LASSO", "lasso", default_log_alpha=-1.4)
+
+with tab6:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.subheader("Can students beat OLS?")
     st.markdown(
@@ -1050,7 +1372,7 @@ with tab4:
             xaxis_title="x",
             yaxis_title="y",
         )
-        st.plotly_chart(guess_fig, use_container_width=True)
+        st.plotly_chart(guess_fig, width="stretch")
 
     with g2:
         if show_true_relationship:
