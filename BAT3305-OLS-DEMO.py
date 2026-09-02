@@ -9,6 +9,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from polynomial import (
+    POPULATION_COEFFICIENTS,
+    fit_polynomial,
+    population_mean,
+    predict_polynomial,
+    simulate_polynomial_data,
+)
 from regularization import (
     coefficient_path,
     comparison_table,
@@ -632,6 +639,310 @@ def render_regularization_tab(kind: str, key_prefix: str, default_log_alpha: flo
             )
 
 
+def render_polynomial_tab() -> None:
+    """Render a one-predictor/one-outcome polynomial specification lab."""
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.subheader("Bivariate polynomial regression lab")
+    st.markdown(
+        "Choose the degree of the **population relationship** and the degree of the **fitted model** "
+        "independently. Degree 1 is linear; degrees 2–5 add progressively higher powers of the same predictor."
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    controls = st.columns(3)
+    with controls[0]:
+        population_degree = st.slider(
+            "Population polynomial degree (n)",
+            1,
+            5,
+            3,
+            1,
+            key="poly_population_degree",
+            help="The highest power of x used to generate the population mean. n=1 is linear.",
+        )
+        model_degree = st.slider(
+            "Fitted model polynomial degree (n)",
+            1,
+            5,
+            2,
+            1,
+            key="poly_model_degree",
+            help="The highest power of x included in the estimated regression model.",
+        )
+    with controls[1]:
+        total_n = st.slider(
+            "Polynomial sample size",
+            40,
+            500,
+            180,
+            10,
+            key="poly_sample_size",
+        )
+        train_share = st.slider(
+            "Polynomial training share (%)",
+            60,
+            90,
+            75,
+            5,
+            key="poly_train_share",
+        )
+    with controls[2]:
+        noise_sd = st.slider(
+            "Polynomial outcome noise",
+            0.0,
+            20.0,
+            8.0,
+            0.5,
+            key="poly_noise",
+        )
+        seed = int(
+            st.number_input(
+                "Polynomial simulation seed",
+                min_value=1,
+                max_value=999999,
+                value=3305,
+                step=1,
+                key="poly_seed",
+            )
+        )
+
+    data = simulate_polynomial_data(
+        seed=seed,
+        total_sample_size=total_n,
+        train_percent=train_share,
+        population_degree=population_degree,
+        noise_sd=noise_sd,
+    )
+    model = fit_polynomial(data.x_train, data.y_train, model_degree, data.x_scale)
+    train_predictions = np.maximum(predict_polynomial(model, data.x_train), 0.0)
+    test_predictions = np.maximum(predict_polynomial(model, data.x_test), 0.0)
+    train_metrics = regression_metrics(data.y_train, train_predictions)
+    test_metrics = regression_metrics(data.y_test, test_predictions)
+
+    if model_degree < population_degree:
+        specification_label = "Under-specified"
+        specification_message = (
+            "The fitted model cannot represent every term in the population relationship. More data can reduce "
+            "sampling noise, but it cannot supply the omitted powers."
+        )
+    elif model_degree == population_degree:
+        specification_label = "Correct degree"
+        specification_message = (
+            "The fitted model contains the population's highest power. Sampling noise can still move the estimated "
+            "curve away from the population curve."
+        )
+    else:
+        specification_label = "Over-specified"
+        specification_message = (
+            "The fitted model includes powers whose population coefficients are zero. This adds flexibility and can "
+            "increase variance, especially in small samples."
+        )
+
+    metric_columns = st.columns(6)
+    metric_items = [
+        ("Population degree", str(population_degree)),
+        ("Model degree", str(model_degree)),
+        ("Test RMSLE", f"{test_metrics['RMSLE']:.4f}"),
+        ("Test mean APE", f"{test_metrics['Mean APE (%)']:.2f}%"),
+        ("Test RMSE", f"{test_metrics['RMSE']:.2f}"),
+        ("Test R²", f"{test_metrics['R²']:.3f}"),
+    ]
+    for column, (label, value) in zip(metric_columns, metric_items):
+        column.metric(label, value)
+
+    st.info(f"**{specification_label}:** {specification_message}")
+
+    formula_terms = [f"{POPULATION_COEFFICIENTS[0]:.0f}"]
+    for power in range(1, population_degree + 1):
+        coefficient = POPULATION_COEFFICIENTS[power]
+        power_text = "z" if power == 1 else rf"z^{{{power}}}"
+        formula_terms.append(f"{coefficient:+.0f}{power_text}")
+    st.markdown("**Selected population**")
+    st.latex(r"E[Y\mid x]=" + "".join(formula_terms) + r",\qquad z=x/3")
+    st.caption(
+        f"The observed outcome adds normally distributed noise with SD {noise_sd:.1f}. "
+        "The simulated population is kept positive so RMSLE and APE remain defined."
+    )
+
+    x_grid = np.linspace(-data.x_scale, data.x_scale, 320)
+    true_grid = population_mean(x_grid, population_degree, data.x_scale)
+    fitted_grid = np.maximum(predict_polynomial(model, x_grid), 0.0)
+    curve_figure = go.Figure()
+    curve_figure.add_trace(
+        go.Scatter(
+            x=data.x_train,
+            y=data.y_train,
+            mode="markers",
+            name="Training observations",
+            marker=dict(size=8, opacity=0.70, color="#2563eb"),
+        )
+    )
+    curve_figure.add_trace(
+        go.Scatter(
+            x=data.x_test,
+            y=data.y_test,
+            mode="markers",
+            name="Test observations",
+            marker=dict(size=8, opacity=0.70, color="#f59e0b", symbol="diamond"),
+        )
+    )
+    curve_figure.add_trace(
+        go.Scatter(
+            x=x_grid,
+            y=true_grid,
+            mode="lines",
+            name=f"Population degree {population_degree}",
+            line=dict(width=4, dash="dash", color="#0f172a"),
+        )
+    )
+    curve_figure.add_trace(
+        go.Scatter(
+            x=x_grid,
+            y=fitted_grid,
+            mode="lines",
+            name=f"Fitted degree {model_degree}",
+            line=dict(width=4, color="#dc2626"),
+        )
+    )
+    curve_figure.update_layout(
+        title="Population curve and fitted polynomial",
+        template="plotly_white",
+        height=500,
+        margin=dict(l=10, r=10, t=55, b=10),
+        xaxis_title="Predictor x",
+        yaxis_title="Positive outcome y",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+
+    coefficient_rows = []
+    for power in range(0, 6):
+        coefficient_rows.append(
+            {
+                "Term": "Intercept" if power == 0 else ("z" if power == 1 else f"z^{power}"),
+                "Population coefficient": (
+                    POPULATION_COEFFICIENTS[power] if power <= population_degree else 0.0
+                ),
+                "Estimated coefficient": model.coefficients[power] if power <= model_degree else np.nan,
+                "Included in fitted model": power <= model_degree,
+            }
+        )
+    coefficient_table = pd.DataFrame(coefficient_rows).round(3)
+
+    curve_left, curve_right = st.columns([1.25, 0.75])
+    with curve_left:
+        st.plotly_chart(curve_figure, width="stretch")
+    with curve_right:
+        st.markdown("#### Population and estimated terms")
+        st.dataframe(coefficient_table, hide_index=True, width="stretch")
+        st.caption(
+            "Coefficients use z=x/3. A zero population coefficient means that power is absent from the true relationship; "
+            "a blank estimate means the fitted model did not include that power."
+        )
+
+    degree_rows = []
+    for candidate_degree in range(1, 6):
+        candidate_model = fit_polynomial(
+            data.x_train,
+            data.y_train,
+            candidate_degree,
+            data.x_scale,
+        )
+        candidate_train = np.maximum(predict_polynomial(candidate_model, data.x_train), 0.0)
+        candidate_test = np.maximum(predict_polynomial(candidate_model, data.x_test), 0.0)
+        candidate_train_metrics = regression_metrics(data.y_train, candidate_train)
+        candidate_test_metrics = regression_metrics(data.y_test, candidate_test)
+        degree_rows.append(
+            {
+                "Model degree": candidate_degree,
+                "Selected": "✓" if candidate_degree == model_degree else "",
+                "Train RMSLE": candidate_train_metrics["RMSLE"],
+                "Test RMSLE": candidate_test_metrics["RMSLE"],
+                "Test mean APE (%)": candidate_test_metrics["Mean APE (%)"],
+                "Test RMSE": candidate_test_metrics["RMSE"],
+                "Test R²": candidate_test_metrics["R²"],
+            }
+        )
+    degree_table = pd.DataFrame(degree_rows).round(4)
+
+    rmsle_matrix = np.empty((5, 5), dtype=float)
+    for population_index, candidate_population_degree in enumerate(range(1, 6)):
+        candidate_data = simulate_polynomial_data(
+            seed=seed,
+            total_sample_size=total_n,
+            train_percent=train_share,
+            population_degree=candidate_population_degree,
+            noise_sd=noise_sd,
+        )
+        for model_index, candidate_model_degree in enumerate(range(1, 6)):
+            candidate_model = fit_polynomial(
+                candidate_data.x_train,
+                candidate_data.y_train,
+                candidate_model_degree,
+                candidate_data.x_scale,
+            )
+            candidate_predictions = np.maximum(
+                predict_polynomial(candidate_model, candidate_data.x_test),
+                0.0,
+            )
+            rmsle_matrix[population_index, model_index] = regression_metrics(
+                candidate_data.y_test,
+                candidate_predictions,
+            )["RMSLE"]
+
+    heatmap = go.Figure(
+        go.Heatmap(
+            z=rmsle_matrix,
+            x=[1, 2, 3, 4, 5],
+            y=[1, 2, 3, 4, 5],
+            colorscale="Blues",
+            reversescale=True,
+            text=np.round(rmsle_matrix, 3),
+            texttemplate="%{text:.3f}",
+            colorbar=dict(title="Test RMSLE"),
+            hovertemplate="Population degree=%{y}<br>Model degree=%{x}<br>Test RMSLE=%{z:.4f}<extra></extra>",
+        )
+    )
+    heatmap.add_shape(
+        type="rect",
+        x0=model_degree - 0.48,
+        x1=model_degree + 0.48,
+        y0=population_degree - 0.48,
+        y1=population_degree + 0.48,
+        line=dict(color="#dc2626", width=4),
+    )
+    heatmap.update_layout(
+        title="Population degree × fitted-model degree",
+        template="plotly_white",
+        height=430,
+        margin=dict(l=10, r=10, t=55, b=10),
+        xaxis=dict(title="Fitted model degree", tickmode="array", tickvals=[1, 2, 3, 4, 5]),
+        yaxis=dict(title="Population degree", tickmode="array", tickvals=[1, 2, 3, 4, 5]),
+    )
+
+    comparison_left, comparison_right = st.columns([1.0, 1.0])
+    with comparison_left:
+        st.markdown("#### Fit every model degree to the selected population")
+        st.dataframe(degree_table, hide_index=True, width="stretch")
+        st.caption(
+            "Training error generally falls as degree increases. Use the held-out test metrics to judge whether the extra "
+            "powers generalize."
+        )
+    with comparison_right:
+        st.plotly_chart(heatmap, width="stretch")
+        st.caption("The red outline marks the currently selected population/model combination.")
+
+    with st.expander("Student exploration prompts"):
+        st.markdown(
+            """
+            1. Hold the population at degree 1 and raise the fitted-model degree. What happens to train versus test RMSLE?
+            2. Set the population to degree 5 and the model to degree 1. Can a larger sample repair the missing curvature?
+            3. Match both degrees, then increase noise. Does the correct model always have the lowest test error in one sample?
+            4. Change only the seed. Which conclusions are stable, and which reflect sampling variation?
+            5. Find a case where a simpler model has nearly the same test RMSLE and APE as the true-degree model.
+            """
+        )
+
+
 # ============================================================
 # Simulation functions
 # ============================================================
@@ -765,13 +1076,14 @@ st.markdown(
     """
     <div class="hero">
         <h1>BAT 3305 - Colazo</h1>
-        <h3>Interactive OLS, Ridge, and LASSO Regression Studio</h3>
+        <h3>Interactive OLS, Ridge, LASSO, and Polynomial Regression Studio</h3>
         <p>
             Explore how ordinary least squares becomes more stable as it ingests more data.
             This lab lets students observe coefficient convergence, uncertainty reduction,
             outlier sensitivity, train-versus-test behavior, and what happens when the
             underlying data-generating process is not truly linear. Dedicated Ridge and LASSO
             labs add correlated predictors, penalty tuning, feature selection, RMSLE, and APE.
+            The polynomial lab separates the population degree from the fitted-model degree.
         </p>
     </div>
     """,
@@ -1005,13 +1317,14 @@ st.markdown(
 # ============================================================
 # Tabs
 # ============================================================
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
     [
         "Playground",
         "Convergence & Generalization",
         "Diagnostics",
         "Ridge Regression",
         "LASSO Regression",
+        "Polynomial Regression",
         "Student Challenge",
     ]
 )
@@ -1254,6 +1567,9 @@ with tab5:
     render_regularization_tab("LASSO", "lasso", default_log_alpha=-1.4)
 
 with tab6:
+    render_polynomial_tab()
+
+with tab7:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.subheader("Can students beat OLS?")
     st.markdown(
